@@ -44,7 +44,7 @@ EPSILON_START = 1.0     # Initial exploration rate
 EPSILON_END = 0.01      # Minimum exploration rate
 EPSILON_DECAY = 0.995   # Decay factor per episode
 TARGET_UPDATE = 10      # Update target network every N episodes
-NUM_EPISODES = 500
+NUM_EPISODES = 5000
 MAX_STEPS_PER_EPISODE = 30  # Maximum balls per episode
 
 # Set device to CUDA if available, otherwise CPU
@@ -163,12 +163,12 @@ class CricketEnv:
             p=probs
         )
         
-        # Calculate reward and check if episode is done
+        # Calculate reward and determine if episode ends
         done = False
         if sampled_outcome == 'Wicket':
             reward = -100
-            done = True
             self.episode_wickets += 1
+            done = True  # Episode ends on wicket (max 1 wicket per episode)
         else:
             reward = int(sampled_outcome)
             self.episode_runs += reward
@@ -176,11 +176,11 @@ class CricketEnv:
         # Increment step counter
         self.current_step += 1
         
-        # End episode if max steps reached
+        # End episode if max steps reached (without getting out)
         if self.current_step >= MAX_STEPS_PER_EPISODE:
             done = True
         
-        # Sample next state (new delivery)
+        # Sample next state only if episode continues
         if not done:
             raw_sample = self.state_df_raw.sample(1).iloc[0]
             self.current_state_dict = {col: raw_sample[col] for col in self.state_cols}
@@ -423,6 +423,8 @@ def train_agent():
     episode_rewards = []
     episode_runs = []
     episode_lengths = []
+    episode_wickets = []
+    episode_balls_before_first_wicket = []  # New tracking
     recent_losses = []
     
     # Best model tracking
@@ -434,12 +436,19 @@ def train_agent():
         total_reward = 0
         done = False
         episode_losses = []
+        first_wicket_ball = None  # Track when first wicket occurs
         
         # Episode loop
+        step_count = 0
         while not done:
             # Select and perform action
             action = agent.select_action(observation)
             next_observation, reward, done, info = env.step(action)
+            step_count += 1
+            
+            # Track first wicket
+            if reward == -100 and first_wicket_ball is None:
+                first_wicket_ball = step_count
             
             # Store transition in replay buffer
             agent.memory.push(observation, action, reward, next_observation, done)
@@ -453,10 +462,18 @@ def train_agent():
             observation = next_observation
             total_reward += reward
         
-        # Episode finished
+        # Episode finished - record statistics
         episode_rewards.append(total_reward)
         episode_runs.append(env.episode_runs)
         episode_lengths.append(env.current_step)
+        episode_wickets.append(env.episode_wickets)
+        
+        # Record balls faced before first wicket (or full episode if no wicket)
+        if first_wicket_ball is not None:
+            episode_balls_before_first_wicket.append(first_wicket_ball)
+        else:
+            episode_balls_before_first_wicket.append(env.current_step)
+        
         if episode_losses:
             recent_losses.append(np.mean(episode_losses))
         
@@ -467,31 +484,53 @@ def train_agent():
         if episode % TARGET_UPDATE == 0:
             agent.update_target_network()
         
-        # Logging
-        if episode % 10 == 0:
-            avg_reward = np.mean(episode_rewards[-50:])
-            avg_runs = np.mean(episode_runs[-50:])
-            avg_length = np.mean(episode_lengths[-50:])
+        # Detailed logging every 10 episodes
+        if episode % 100 == 0:
+            # Get last 10 episodes stats
+            last_10_runs = episode_runs[-10:]
+            last_10_balls_before_wicket = episode_balls_before_first_wicket[-10:]
+            last_10_wickets = episode_wickets[-10:]
+            last_10_rewards = episode_rewards[-10:]
+            
+            # Get last 50 episodes for averages
+            avg_reward_50 = np.mean(episode_rewards[-50:])
+            avg_runs_50 = np.mean(episode_runs[-50:])
+            avg_length_50 = np.mean(episode_lengths[-50:])
             avg_loss = np.mean(recent_losses[-50:]) if recent_losses else 0
             
-            print(f"Episode {episode:4d}/{NUM_EPISODES} | "
-                  f"Avg Reward: {avg_reward:7.2f} | "
-                  f"Avg Runs: {avg_runs:5.2f} | "
-                  f"Avg Steps: {avg_length:5.1f} | "
-                  f"Loss: {avg_loss:.4f} | "
-                  f"ε: {agent.epsilon:.3f}")
+            print(f"\n{'='*70}")
+            print(f"Episode {episode:4d}/{NUM_EPISODES}")
+            print(f"{'='*70}")
+            print(f"Last 10 Episodes Performance:")
+            print(f"  Total Runs:              {sum(last_10_runs):3d} runs ({np.mean(last_10_runs):.1f} per episode)")
+            print(f"  Total Wickets:           {sum(last_10_wickets):3d} wickets ({np.mean(last_10_wickets):.1f} per episode)")
+            print(f"  Avg Balls Before Wicket: {np.mean(last_10_balls_before_wicket):5.1f} balls")
+            print(f"  Min Balls Before Wicket: {min(last_10_balls_before_wicket):3d} balls")
+            print(f"  Max Balls Before Wicket: {max(last_10_balls_before_wicket):3d} balls")
+            print(f"  Avg Reward:              {np.mean(last_10_rewards):7.2f}")
+            print(f"\nRolling Averages (Last 50 episodes):")
+            print(f"  Avg Reward: {avg_reward_50:7.2f}")
+            print(f"  Avg Runs:   {avg_runs_50:5.2f}")
+            print(f"  Avg Steps:  {avg_length_50:5.1f}")
+            print(f"\nTraining Metrics:")
+            print(f"  Loss:       {avg_loss:.4f}")
+            print(f"  Epsilon:    {agent.epsilon:.3f}")
+            print(f"  Buffer:     {len(agent.memory)}/{REPLAY_CAPACITY}")
+            print(f"{'='*70}\n")
             
             # Save best model
-            if avg_reward > best_avg_reward:
-                best_avg_reward = avg_reward
+            if avg_reward_50 > best_avg_reward:
+                best_avg_reward = avg_reward_50
                 agent.save('cricket_dqn_best.pth')
     
     # Final statistics
     print("\n" + "="*70)
     print("TRAINING COMPLETE")
     print("="*70)
-    print(f"Final Average Reward (last 100): {np.mean(episode_rewards[-100:]):.2f}")
-    print(f"Final Average Runs (last 100): {np.mean(episode_runs[-100:]):.2f}")
+    print(f"Final Average Reward (last 100):            {np.mean(episode_rewards[-100:]):.2f}")
+    print(f"Final Average Runs (last 100):              {np.mean(episode_runs[-100:]):.2f}")
+    print(f"Final Average Balls Before Wicket (last 100): {np.mean(episode_balls_before_first_wicket[-100:]):.1f}")
+    print(f"Final Average Wickets per Episode (last 100): {np.mean(episode_wickets[-100:]):.2f}")
     print(f"Best Average Reward: {best_avg_reward:.2f}")
     print(f"Final Epsilon: {agent.epsilon:.3f}")
     
