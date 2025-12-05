@@ -5,9 +5,13 @@ import os
 import time
 import mujoco
 import mujoco_viewer
+import glfw
 
 # IMPORTANT: Ensure this matches your training filename
-from rl_agent import CricketEnv, DQNAgent, ACTION_MAP
+from dqn_with_graphs import CricketOverEnv, DQNAgent, ACTION_MAP
+
+class TrainingMetrics:
+    pass
 
 # ==============================================================================
 # 1. TUNED PHYSICS XML (Stable & Timed)
@@ -95,18 +99,25 @@ class CricketVisualizer:
         for _ in range(100):
             mujoco.mj_step(self.model, self.data)
 
-    def visualize_shot(self, action_name, outcome):
+    def visualize_shot(self, action_name, outcome, ball, total_runs):
         self.reset_physics()
         
         # Throw Ball (-9.0 speed)
-        self.data.qvel[self.ball_dof_adr + 1] = -27.0 
+        self.data.qvel[self.ball_dof_adr + 1] = -33.0 
         
         impact_happened = False
         steps = 0
         swing_triggered = False
+
+        status_text = f"Ball: {ball}/6 | Shot: {action_name} | Outcome: {outcome} | Total Runs: {total_runs}"
         
-        while steps < 400:
+        # Try to set the title if the viewer has a window
+        if hasattr(self.viewer, 'window'):
+            glfw.set_window_title(self.viewer.window, status_text)
+        
+        while steps < 300:
             ball_y = self.data.qpos[self.ball_qpos_adr + 1]
+
             
             # --- SWING TIMING FIX ---
             # Wait until ball is at 2.0m (much closer)
@@ -139,10 +150,10 @@ class CricketVisualizer:
         time.sleep(0.2)
 
     def _get_shot_vector(self, shot_name):
+        # (X=Left/Right, Y=Fwd/Back, Z=Up
         vectors = {
             'Straight Drive': (0, 15, 5),
             'Cover Drive':    (10, 10, 3),
-            'Edge':           (2, -5, 2),
             'Hook':           (-10, -5, 10),
             'Pull':           (-12, 6, 6),
             'Cut':            (12, 0, 4),
@@ -159,14 +170,14 @@ class CricketVisualizer:
 # 3. MAIN
 # ==============================================================================
 
-def run_simulation(model_path='cricket_dqn_final.pth', num_balls=20):
+def run_simulation(model_path='cricket_agent_final.pth', num_balls=6):
     print(f"LOADING AGENT FROM: {model_path}")
 
     if not os.path.exists(model_path):
         print(f"Error: {model_path} not found.")
         return
 
-    env = CricketEnv()
+    env = CricketOverEnv()
     agent = DQNAgent(env)
     agent.load(model_path)
     agent.epsilon = 0.0
@@ -176,6 +187,7 @@ def run_simulation(model_path='cricket_dqn_final.pth', num_balls=20):
     
     try:
         print("\nStarting Simulation...")
+        totalRuns = 0
         for i in range(num_balls):
             obs = env.reset()
             action_idx = agent.select_action(obs, training=False)
@@ -183,13 +195,16 @@ def run_simulation(model_path='cricket_dqn_final.pth', num_balls=20):
             
             _, reward, done, info = env.step(action_idx)
             outcome = info['outcome']
+            if outcome != 'Wicket':
+                totalRuns += int(outcome)
             
             print(f"Ball {i+1}: {shot_name:15s} -> Outcome: {outcome}")
             
-            visualizer.visualize_shot(shot_name, outcome)
+            visualizer.visualize_shot(shot_name, outcome, i+1, totalRuns)
             
             if done: 
                  print("  (Episode End - Wicket or Max Balls)")
+                 break
 
     except KeyboardInterrupt:
         print("Stopped.")
