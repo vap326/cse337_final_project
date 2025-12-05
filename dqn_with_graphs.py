@@ -615,6 +615,36 @@ class DQNAgent:
             'metrics': self.metrics
         }, path)
 
+    def load(self, path='cricket_agent_final.pth'):
+        """
+        Loads a trained agent.
+        Updated for PyTorch 2.6+ compatibility.
+        """
+
+        try:
+            # FIX: Added weights_only=False to allow loading your custom TrainingMetrics class
+            checkpoint = torch.load(path, map_location=DEVICE, weights_only=False)
+            
+            # 1. Load the Network Weights
+            self.policy_net.load_state_dict(checkpoint['policy_net'])
+            self.target_net.load_state_dict(checkpoint['target_net'])
+            
+            # 2. Load Optimizer
+            self.optimizer.load_state_dict(checkpoint['optimizer'])
+            
+            # 3. Load Variables
+            self.epsilon = checkpoint['epsilon']
+            
+            # 4. Load Metrics
+            if 'metrics' in checkpoint:
+                self.metrics = checkpoint['metrics']
+                
+            print(f"✓ Agent loaded successfully from {path}")
+            print(f"  - Epsilon: {self.epsilon:.4f}")
+            
+        except Exception as e:
+            print(f"Error loading model: {e}")
+
 # ==============================================================================
 # TRAINING
 # ==============================================================================
